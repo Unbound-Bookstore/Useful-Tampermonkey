@@ -5,6 +5,8 @@
 // @description  Auto-extract ISBN and send to parent window
 // @match        https://item.taobao.com/item.htm*
 // @match        https://detail.tmall.com/item.htm*
+// @match        https://*.tmall.com/item.htm*
+// @match        https://book.douban.com/subject/*
 // @grant        GM_setClipboard
 // @grant        GM_addStyle
 // ==/UserScript==
@@ -43,24 +45,60 @@
     `);
 
     function extractISBN() {
-        // Find all parameter items
-        const items = document.querySelectorAll('.generalParamsInfoItem--qLqLDVWp');
+        // Strategy 0: Douban book page — <span class="pl">ISBN:</span> followed by text node
+        const infoDiv = document.getElementById('info');
+        if (infoDiv) {
+            const plSpans = infoDiv.querySelectorAll('span.pl');
+            for (const span of plSpans) {
+                if (span.textContent.includes('ISBN')) {
+                    // ISBN value is the next text node after the span
+                    let node = span.nextSibling;
+                    while (node) {
+                        if (node.nodeType === Node.TEXT_NODE) {
+                            const isbn = node.textContent.trim().replace(/[\s\-–—]/g, '');
+                            if (/^\d{10}$|^\d{13}$/.test(isbn)) {
+                                return isbn;
+                            }
+                        }
+                        node = node.nextSibling;
+                    }
+                }
+            }
+        }
 
-        for (const item of items) {
-            const title = item.querySelector('.generalParamsInfoItemTitle--Fo9kKj5Z');
-            const value = item.querySelector('.generalParamsInfoItemSubTitle--S4pgp6b9');
-
-            if (title && value) {
-                const titleText = title.textContent.trim();
-                // Check if this is ISBN field
-                if (titleText.includes('ISBN') || titleText.includes('书号')) {
-                    const isbn = value.textContent.trim().replace(/[\s\-–—]/g, '');
+        // Strategy 1: emphasis params section (新版 — label is subtitle, value is title)
+        // <emphasisParamsInfoItemTitle> = value, <emphasisParamsInfoItemSubTitle> = label
+        const emphasisItems = document.querySelectorAll('[class*="emphasisParamsInfoItem--"]');
+        for (const item of emphasisItems) {
+            const valueElem = item.querySelector('[class*="emphasisParamsInfoItemTitle--"]');
+            const labelElem = item.querySelector('[class*="emphasisParamsInfoItemSubTitle--"]');
+            if (valueElem && labelElem) {
+                const label = labelElem.textContent.trim();
+                if (label.includes('ISBN') || label.includes('书号')) {
+                    const isbn = (valueElem.getAttribute('title') || valueElem.textContent).trim().replace(/[\s\-–—]/g, '');
                     if (/^\d{10}$|^\d{13}$/.test(isbn)) {
                         return isbn;
                     }
                 }
             }
         }
+
+        // Strategy 2: general params section (旧版 — label is title, value is subtitle)
+        const items = document.querySelectorAll('[class*="generalParamsInfoItem--"]');
+        for (const item of items) {
+            const labelElem = item.querySelector('[class*="generalParamsInfoItemTitle--"]');
+            const valueElem = item.querySelector('[class*="generalParamsInfoItemSubTitle--"]');
+            if (labelElem && valueElem) {
+                const label = labelElem.textContent.trim();
+                if (label.includes('ISBN') || label.includes('书号')) {
+                    const isbn = valueElem.textContent.trim().replace(/[\s\-–—]/g, '');
+                    if (/^\d{10}$|^\d{13}$/.test(isbn)) {
+                        return isbn;
+                    }
+                }
+            }
+        }
+
         return null;
     }
 
