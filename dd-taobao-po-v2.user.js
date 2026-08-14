@@ -392,7 +392,11 @@ function extractTaobaoOrderData() {
             const productName = productNameElem.textContent.trim();
             const productUrl = productLink.href;
 
-            console.log("FOUND PRODUCT:", productName, productUrl);
+            // Get variant name (first info row, e.g. "占据" for a book set)
+            const infoElems = row.querySelectorAll('.infoContent--bykGfoHq');
+            const variant = infoElems.length > 0 ? infoElems[0].textContent.trim() : '';
+
+            console.log("FOUND PRODUCT:", productName, productUrl, variant ? `[variant: ${variant}]` : '');
 
             // Get price container
             const priceContainer = row.querySelector('.itemInfoColPrice--b9wc2Zg0');
@@ -454,6 +458,7 @@ function extractTaobaoOrderData() {
 
             orderData.items.push({
                 name: productName,
+                variant: variant,
                 url: productUrl,
                 quantity: quantity.toString(),
                 unitPrice: unitPrice.toFixed(2),
@@ -687,7 +692,8 @@ async function fetchISBNs(orderData, updateCallback) {
         let output = '';
 
         orderData.items.forEach(item => {
-            output += `${item.isbn}\t${item.name}\t${item.quantity}\t${item.unitPrice}\t${item.subtotal}\t\t\t${item.url}\t${orderData.packageNumber || ''}\n`;
+            const nameWithVariant = item.variant ? `${item.name} [${item.variant}]` : item.name;
+            output += `${item.isbn}\t${nameWithVariant}\t${item.quantity}\t${item.unitPrice}\t${item.subtotal}\t\t\t${item.url}\t${orderData.packageNumber || ''}\n`;
         });
 
         return output;
@@ -794,10 +800,11 @@ async function fetchISBNs(orderData, updateCallback) {
             const isbnStatus = item.isbn === 'ERROR' ? '❌ 获取失败' : (item.isbn ? `✅ ${item.isbn}` : '⚠️ 未找到');
             const statusColor = item.isbn === 'ERROR' ? '#f5222d' : (item.isbn ? '#52c41a' : '#faad14');
             const packageInfo = item.packageName ? `<span style="color: #999; font-size: 11px;">[${item.packageName}]</span> ` : '';
+            const variantInfo = item.variant ? `<span style="color: #888; font-size: 11px;"> — ${item.variant}</span>` : '';
             itemsList += `<div style="padding: 8px; border-bottom: 1px solid #eee; background: ${index % 2 === 0 ? '#fff' : '#fafafa'};">
                 <div style="display: flex; justify-content: space-between; align-items: start;">
                     <div style="flex: 1;">
-                        <div style="font-weight: bold; font-size: 13px;">${packageInfo}${index + 1}. ${item.name}</div>
+                        <div style="font-weight: bold; font-size: 13px;">${packageInfo}${index + 1}. ${item.name}${variantInfo}</div>
                         <div style="font-size: 11px; color: #999; margin-top: 2px;">数量: ${item.quantity} | 单价: ¥${item.unitPrice} | 小计: ¥${item.subtotal}</div>
                     </div>
                     <div style="font-size: 12px; color: ${statusColor}; white-space: nowrap; margin-left: 10px;">
