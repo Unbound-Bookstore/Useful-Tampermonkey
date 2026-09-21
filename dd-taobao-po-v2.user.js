@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dangdang & Taobao Order to PO Table
 // @namespace    http://tampermonkey.net/dd-taobao-po-v2
-// @version      2.1
+// @version      2.3
 // @description  Convert Dangdang and Taobao order pages to PO table format
 // @connect      *
 // @run-at       document-start
@@ -14,6 +14,7 @@
 // @match        *://*.tmall.com/*
 // @match        https://buyertrade.taobao.com/*
 // @match        https://trade.taobao.com/*
+// @match        https://*.1688.com/*
 // @grant        GM_setClipboard
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
@@ -27,7 +28,8 @@
     // Detect platform
     const PLATFORM = {
         DANGDANG: 'dangdang',
-        TAOBAO: 'taobao'
+        TAOBAO: 'taobao',
+        ALI1688: '1688'
     };
 // ========== SEMI-AUTOMATIC EXTRACTION VARIABLES ==========
 let isbnExtractionQueue = [];
@@ -41,6 +43,8 @@ let openedWindows = [];
             return PLATFORM.DANGDANG;
         } else if (hostname.includes('taobao.com')) {
             return PLATFORM.TAOBAO;
+        } else if (hostname.includes('1688.com')) {
+            return PLATFORM.ALI1688;
         }
         return null;
     }
@@ -575,6 +579,141 @@ function extractISBNFromTaobaoHTML(html) {
 }
 
     // ========== TAOBAO ISBN EXTRACTION ==========
+
+// ========== 1688 EXTRACTION ==========
+
+// Recursively query all shadow roots to pierce shadow DOM
+function shadowQueryAll(root, selector) {
+    const results = [];
+    try {
+        results.push(...Array.from(root.querySelectorAll(selector)));
+        root.querySelectorAll('*').forEach(el => {
+            if (el.shadowRoot) results.push(...shadowQueryAll(el.shadowRoot, selector));
+        });
+    } catch(e) {}
+    return results;
+}
+
+function extract1688OrderData() {
+    const orderData = {
+        platform: PLATFORM.ALI1688,
+        orderNumber: '',
+        packageNumber: '',
+        sellerName: '',
+        items: []
+    };
+
+    // Clean lit-html comment artifacts from element text
+    function cleanText(el) {
+        if (!el) return '';
+        return el.textContent.replace(/<!--\?lit\$[^>]*-->/g, '').replace(/<!--[^>]*-->/g, '').trim();
+    }
+
+    // All content lives in shadow DOM — use shadowQueryAll to pierce it
+    // order-item-entry-product is the custom element; its content is in its own shadow root
+    const productWCs = shadowQueryAll(document, 'order-item-entry-product');
+    console.log(`1688 extract: found ${productWCs.length} product entries (shadow DOM)`);
+
+    productWCs.forEach(wc => {
+        // Content lives inside this custom element's shadow root
+        const entry = wc.shadowRoot ? wc.shadowRoot.querySelector('.order-item-entry-product') || wc.shadowRoot : wc;
+
+        // Product name: .product-name anchor inside shadow root
+        const nameEl = entry.querySelector('.product-name');
+        if (!nameEl) return;
+        const productName = cleanText(nameEl);
+        if (!productName) return;
+        const productUrl = nameEl.href || '';
+
+        // Thumbnail: img inside .product-img anchor
+        let thumbnail = '';
+        const imgEl = entry.querySelector('.product-img img') || entry.querySelector('img');
+        if (imgEl) {
+            thumbnail = imgEl.src || imgEl.dataset.src || '';
+            // Strip alicdn size suffix (e.g. _160x160.jpg_.webp) to get the base image URL
+            thumbnail = thumbnail.replace(/_\d+x\d+.*$/i, '');
+        }
+
+        // Variant from .sku-info-item spans inside shadow root
+        const skuItems = entry.querySelectorAll('.sku-info-item');
+        const variant = Array.from(skuItems).map(s => cleanText(s)).filter(Boolean).join(' ').trim();
+
+        // Price and quantity are in sibling custom elements with their own shadow roots
+        // wc is the light-DOM <order-item-entry-product> element — use it to find siblings
+        const entryRow = wc.closest('.order-item-entry') || wc.parentElement;
+        let unitPrice = '';
+        let quantity = '1';
+
+        if (entryRow) {
+            const priceWC = entryRow.querySelector('order-item-entry-unit-price');
+            if (priceWC && priceWC.shadowRoot) {
+                const priceEl = priceWC.shadowRoot.querySelector('.actual-unit-price');
+                if (priceEl) {
+                    const pm = cleanText(priceEl).match(/([\d.]+)/);
+                    if (pm) unitPrice = pm[1];
+                }
+            }
+
+            const qtyWC = entryRow.querySelector('order-item-entry-quantity-service-status');
+            if (qtyWC && qtyWC.shadowRoot) {
+                const qtyEl = qtyWC.shadowRoot.querySelector('.quantity-amount');
+                if (qtyEl) {
+                    const qm = cleanText(qtyEl).match(/(\d+)/);
+                    if (qm) quantity = qm[1];
+                }
+            }
+        }
+
+        const subtotal = (unitPrice && quantity)
+            ? (parseFloat(unitPrice) * parseInt(quantity)).toFixed(2)
+            : '';
+
+        // Order number and seller from sibling .order-item-header
+        // wc is in light DOM so .closest() works up the real DOM tree
+        let sellerName = '';
+        let orderNumber = '';
+        const itemContent = wc.closest('.order-item-content');
+        const container = itemContent ? itemContent.parentElement : wc.closest('.order-list-item');
+        if (container) {
+            const header = container.querySelector('.order-item-header');
+            if (header) {
+                const copyEl = header.querySelector('copy-to-clipboard');
+                if (copyEl) {
+                    const attr = copyEl.getAttribute('text') || cleanText(copyEl);
+                    const m = attr.match(/(\d{15,})/);
+                    if (m) orderNumber = m[1];
+                }
+                const sellerEl = header.querySelector('.supplier-name') ||
+                                 header.querySelector('[class*="shop-name"]') ||
+                                 header.querySelector('[class*="company"]');
+                if (sellerEl) sellerName = cleanText(sellerEl);
+            }
+        }
+
+        if (!orderData.orderNumber && orderNumber) orderData.orderNumber = orderNumber;
+        if (!orderData.sellerName && sellerName) orderData.sellerName = sellerName;
+
+        const isbnFromTitle = extractISBNFromText(productName);
+        console.log(`1688 item: "${productName}" | qty:${quantity} price:${unitPrice} | img:${thumbnail ? '✓' : '✗'}`);
+
+        orderData.items.push({
+            name: productName,
+            variant: variant,
+            url: productUrl,
+            quantity: quantity,
+            unitPrice: unitPrice,
+            subtotal: subtotal,
+            packageName: '',
+            isbn: isbnFromTitle || '',
+            thumbnail: thumbnail,
+            orderNumber: orderNumber,
+            sellerName: sellerName,
+        });
+    });
+
+    return orderData;
+}
+
     // ========== MAIN EXTRACTION ROUTER ==========
     function extractOrderData() {
         const platform = getCurrentPlatform();
@@ -582,6 +721,8 @@ function extractISBNFromTaobaoHTML(html) {
             return extractDangdangOrderData();
         } else if (platform === PLATFORM.TAOBAO) {
             return extractTaobaoOrderData();
+        } else if (platform === PLATFORM.ALI1688) {
+            return extract1688OrderData();
         }
         return null;
     }
@@ -714,6 +855,8 @@ async function fetchISBNs(orderData, updateCallback) {
 
         const platformBadge = orderData.platform === PLATFORM.DANGDANG
             ? '<span class="platform-badge platform-dangdang">当当</span>'
+            : orderData.platform === PLATFORM.ALI1688
+            ? '<span class="platform-badge platform-taobao" style="background:#e8491d">1688</span>'
             : '<span class="platform-badge platform-taobao">淘宝</span>';
 
         modal.innerHTML = `
@@ -730,7 +873,7 @@ async function fetchISBNs(orderData, updateCallback) {
                     <div id="loading-progress-bar" style="height: 100%; background: linear-gradient(90deg, #ff2832, #ff5842); width: 0%; transition: width 0.3s;"></div>
                 </div>
                 <div style="font-size: 12px; color: #999;" id="loading-current-item">
-                    ${orderData.platform === PLATFORM.TAOBAO ? '淘宝ISBN获取功能不稳定，小心使用' : '正在从API获取ISBN信息，请稍候...'}
+                    ${(orderData.platform === PLATFORM.TAOBAO || orderData.platform === PLATFORM.ALI1688) ? '淘宝/1688 ISBN获取功能不稳定，小心使用' : '正在从API获取ISBN信息，请稍候...'}
                 </div>
             </div>
         `;
@@ -1189,11 +1332,27 @@ window.addEventListener('message', function(event) {
 
         const button = document.createElement('button');
         button.id = 'dd-export-btn';
-        button.textContent = platform === PLATFORM.DANGDANG ? '📋 导出订单 (当当)' : '📋 导出订单 (淘宝)';
+        button.textContent = platform === PLATFORM.DANGDANG ? '📋 导出订单 (当当)' : platform === PLATFORM.ALI1688 ? '📋 导出订单 (1688)' : '📋 导出订单 (淘宝)';
         button.addEventListener('click', async () => {
-            const orderData = extractOrderData();
+            let orderData = extractOrderData();
+            // For 1688, shadow DOM components render lazily — retry until prices are populated too
+            if (getCurrentPlatform() === PLATFORM.ALI1688) {
+                const hasPrice = () => {
+                    const priceWC = shadowQueryAll(document, 'order-item-entry-unit-price')[0];
+                    return priceWC && priceWC.shadowRoot && priceWC.shadowRoot.querySelector('.actual-unit-price');
+                };
+                if (!orderData || orderData.items.length === 0 || !hasPrice()) {
+                    button.textContent = '⏳ 加载中...';
+                    for (let i = 0; i < 8; i++) {
+                        await new Promise(r => setTimeout(r, 600));
+                        if (hasPrice()) break;
+                    }
+                    orderData = extractOrderData();
+                    button.textContent = '📋 导出订单 (1688)';
+                }
+            }
             if (!orderData || orderData.items.length === 0) {
-                alert('未找到订单数据！请确保页面已完全加载。');
+                alert('未找到订单数据！请确保页面已完全加载。\n\n调试信息已输出到控制台，请按F12查看。');
                 return;
             }
             await showModal(orderData);
