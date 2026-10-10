@@ -75,7 +75,28 @@ Adds a sidebar panel to Amazon book product pages. Parses the page for book meta
 
 ---
 
-### 4. `ingram_amazon_price_comp.user.js` — Ingram vs Amazon Price Checker
+### 4. `eslite_to_shopify.user.js` — Eslite Book → Shopify (Unbound)
+
+Adds a sidebar panel to eslite.com book product pages. Parses the page for book metadata and sends it to the Unbound backend to create or update a Shopify product. Mirrors `bookstw_to_shopify.user.js` for books.com.tw.
+
+**Matches:** `www.eslite.com/product/*`
+
+**Features:**
+- Extracts: title, author(s), translator(s), illustrator/painter(s), publisher, publication date, ISBN-13, pages, binding, language, dimensions, weight, list/discounted price, cover image, description, category tags (from breadcrumb)
+- Editable fields before submission: title, authors, publisher, language, binding, cost, price, quantity, active status
+- POSTs to `https://unbound-backend.azurewebsites.net/api/ShopifyCreateFromData`
+- Shows a success link to the created/updated Shopify product, or an error message
+
+**Usage:**
+1. Open any eslite.com book product page (e.g. `eslite.com/product/<id>`)
+2. A panel appears at the bottom-right
+3. Review/edit the pre-filled fields
+4. Optionally enter cost, price, quantity; check "Active" to publish immediately
+5. Click **"Send to Shopify"**
+
+---
+
+### 5. `ingram_amazon_price_comp.user.js` — Ingram vs Amazon Price Checker
 
 Enhances Ingram Content Group order/catalog pages by adding an **"Amazon Compare"** column that fetches the live Amazon price for each ISBN and flags titles where buying from Amazon is cheaper.
 
