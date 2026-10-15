@@ -96,6 +96,26 @@ Adds a sidebar panel to eslite.com book product pages. Parses the page for book 
 
 ---
 
+### 4b. `apriori_to_shopify.user.js` — Apriori Distribution Chocolate → Shopify (Unbound)
+
+Adds a panel to aprioridistribution.com (WooCommerce) product pages and creates a non-book Shopify product from it.
+
+**Matches:** `aprioridistribution.com/product/*`
+
+**Features:**
+- Extracts: title, brand (used as vendor), barcode, wholesale price, suggested retail, unit/case size, description, all gallery images (full size)
+- Barcode is used as both SKU and barcode; wholesale price as cost; default price is `floor(wholesale × 2) + 0.99` (recalculated when cost is edited, unless price was edited by hand); product type defaults to `Chocolate`
+- Description drops empty lines, the price/info rows and the distributor's "Check out our sampler" cross-sell line; it's editable before sending
+- POSTs to `https://unbound-backend.azurewebsites.net/api/products/createNonBook` with a single plain variant
+- Won't create a duplicate: if a product with the same barcode exists, it links to that product instead
+
+**Usage:**
+1. Open a product page on aprioridistribution.com
+2. Review/edit the pre-filled fields; optionally enter quantity and check "Active"
+3. Click **"Send to Shopify"**
+
+---
+
 ### 5. `ingram_amazon_price_comp.user.js` — Ingram vs Amazon Price Checker
 
 Enhances Ingram Content Group order/catalog pages by adding an **"Amazon Compare"** column that fetches the live Amazon price for each ISBN and flags titles where buying from Amazon is cheaper.
