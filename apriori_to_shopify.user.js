@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Apriori Distribution → Shopify (Unbound)
 // @namespace    https://unbound-backend.azurewebsites.net/
-// @version      1.2
+// @version      1.3
 // @description  Parse an aprioridistribution.com product page and create a Shopify chocolate product via Unbound backend
 // @author       Unbound
 // @match        https://aprioridistribution.com/product/*
@@ -267,7 +267,9 @@
             priceInput.value = p ?? '';
         });
 
-        btn.addEventListener('click', () => sendToShopify(info, btn));
+        // First click creates; if the barcode already exists the button switches to
+        // "Update existing product", which only fills in what that product is missing.
+        btn.addEventListener('click', () => sendToShopify(info, btn, btn.dataset.mode === 'update'));
 
         if (!info.description) {
             setStatus('No description found on this page — paste one into the Description box before sending.', 'inf');
@@ -316,7 +318,7 @@
 
     // ── API call ─────────────────────────────────────────────────────────
 
-    async function sendToShopify(info, btn) {
+    async function sendToShopify(info, btn, updateExisting) {
         const title = document.getElementById('ub-title').value.trim();
         const vendor = document.getElementById('ub-vendor').value.trim();
         const productType = document.getElementById('ub-type').value.trim();
@@ -345,6 +347,7 @@
             description_html: description || undefined,
             default_variant: true,
             skip_if_exists: true,
+            update_existing: updateExisting,
         };
 
         btn.disabled = true;
@@ -352,8 +355,11 @@
         setStatus(`Fetching ${info.images.length} image(s)…`, 'inf');
 
         const dataUris = await Promise.all(info.images.map(fetchImageAsDataUri));
-        body.images_base64 = dataUris.filter(Boolean);
-        const missedImages = dataUris.length - body.images_base64.length;
+        const fetched = info.images.map((url, i) => [url, dataUris[i]]).filter(([, d]) => d);
+        body.images_base64 = fetched.map(([, d]) => d);
+        // Original file names let the backend skip images an existing product already has
+        body.image_filenames = fetched.map(([url]) => decodeURIComponent(url.split('?')[0].split('/').pop()));
+        const missedImages = dataUris.length - fetched.length;
 
         btn.textContent = 'Sending…';
         setStatus('Contacting backend…', 'inf');
@@ -364,14 +370,24 @@
             headers: { 'Content-Type': 'application/json' },
             data: JSON.stringify(body),
             onload(res) {
-                btn.textContent = 'Send to Shopify';
+                btn.textContent = btn.dataset.mode === 'update' ? 'Update existing product' : 'Send to Shopify';
                 let data;
                 try { data = JSON.parse(res.responseText); } catch (e) { data = {}; }
 
                 if (res.status === 200 && data.success) {
-                    if (data.exists) {
+                    if (data.updated) {
+                        const warnings = [...(data.warnings || [])];
+                        if (missedImages) warnings.unshift(`${missedImages} image(s) couldn't be downloaded from the page`);
+                        const changes = data.changes && data.changes.length ? data.changes.join(', ') : 'nothing was missing';
+                        setStatusLink(`Updated "${data.title}": ${changes}.${warnings.length ? ' Warnings: ' + warnings.join('; ') + '.' : ''}`,
+                            data.product_id, warnings.length ? 'inf' : 'ok');
+                    } else if (data.exists) {
                         btn.disabled = false;
-                        setStatusLink(`Barcode ${barcode} is already in Shopify ("${data.title}") — not created.`, data.product_id, 'inf');
+                        btn.dataset.mode = 'update';
+                        btn.textContent = 'Update existing product';
+                        setStatusLink(`Barcode ${barcode} is already in Shopify ("${data.title}"). ` +
+                            'Click "Update existing product" to add missing images, and cost/description if empty ' +
+                            '(price, title and vendor are left as they are).', data.product_id, 'inf');
                     } else {
                         // Leave the button disabled so a second click can't create a duplicate
                         const warnings = [...(data.warnings || [])];
@@ -386,7 +402,7 @@
             },
             onerror() {
                 btn.disabled = false;
-                btn.textContent = 'Send to Shopify';
+                btn.textContent = btn.dataset.mode === 'update' ? 'Update existing product' : 'Send to Shopify';
                 setStatus('Network error. Check console.', 'err');
             }
         });
