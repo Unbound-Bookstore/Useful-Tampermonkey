@@ -116,24 +116,29 @@ Adds a panel to aprioridistribution.com (WooCommerce) product pages and creates 
 
 ---
 
-### 5. `ingram_amazon_price_comp.user.js` — Ingram vs Amazon Price Checker
+### 5. `amazon_price_comp.user.js` — Distributor vs Amazon Price Checker (Ingram, PubEasy)
 
-Enhances Ingram Content Group order/catalog pages by adding an **"Amazon Compare"** column that fetches the live Amazon price for each ISBN and flags titles where buying from Amazon is cheaper.
+Adds an **"Amazon Compare"** column to Ingram and PubEasy title tables with the Amazon print price, your distributor cost and the margin, and flags titles that are cheaper on Amazon. Replaces the separate `ingram_amazon_price_comp.user.js`.
 
-**Matches:** `*.ingramcontent.com/*`, `*.ingramipage.com/*`
+**Matches:** `*.ingramcontent.com/*`, `*.ingramipage.com/*`, `pubeasy.com/*`, `*.pubeasy.com/*`
 
-**Features:**
-- Reads the EAN/ISBN, SRP, and discount code from each row in the Ingram table
-- Calculates Ingram net cost: `SRP × (1 - discount%)`; handles named discount codes (`REG`=40%, `SHORT`=20%, `NET`=0%)
-- Fetches the Amazon listing price via `GM_xmlhttpRequest`
-- Calculates sell-through margin: `(Amazon price - Ingram cost) / Amazon price`
-- Color-codes margin: green ≥ 30%, orange ≥ 15%, red < 15%
-- Highlights the entire row red and shows a **"BUY FROM AMAZON"** link when Amazon is cheaper than Ingram
+**Cost per site:**
+- **Ingram:** columns are found by header (EAN, Disc %, SRP, Disc. Price), so both search results and the IPS cart work. Cost = the **Disc. Price** when the page shows one (cart), otherwise `SRP × (1 − discount)`, with named codes `REG`=40%, `SHORT`=20%, `NET`=0% (or an explicit `%`)
+- **PubEasy:** reads the ISBN and the "List Price / Personal Price" cell; cost = personal price when shown, otherwise `list price × (1 − discount)`. A floating **Publisher discount** box (bottom-right), default **50%** (Penguin), recalculates every row instantly and is remembered in this browser
+
+**Amazon price:**
+- Print only — Kindle, Audible/audiobook and audio CD prices are ignored, as are sponsored results
+- Prefers the exact edition (the format whose Amazon ASIN is the ISBN-10); otherwise shows the first print format, labeled "other edition"
+- Each ISBN is fetched once per page load; the column is re-added automatically when the site re-renders its table
+
+**Display:**
+- Margin `(Amazon − cost) / Amazon`, color-coded green ≥ 30%, orange ≥ 15%, red < 15%
+- Rows cheaper on Amazon are highlighted red with a **"BUY FROM AMAZON"** link to that format's listing
 
 **Usage:**
-1. Navigate to an Ingram order or catalog page that shows a table with an EAN column
-2. Wait ~2 seconds for the "Amazon Compare" column to populate
-3. Red-highlighted rows indicate titles cheaper on Amazon — click the link to go directly to the Amazon listing
+1. Open an Ingram order/catalog page with an EAN column, or a PubEasy cart
+2. On PubEasy, adjust the discount if this publisher's terms aren't 50%
+3. Red-highlighted rows are cheaper on Amazon
 
 ---
 
@@ -147,4 +152,4 @@ Enhances Ingram Content Group order/catalog pages by adding an **"Amazon Compare
 
 - `dd-taobao-po-v2.user.js` and `Taobao-ISBN-Extractor.user.js` work together — install both for full semi-automatic ISBN extraction on Taobao orders
 - `amazon_to_shopify.user.js` requires access to the Unbound backend (`unbound-backend.azurewebsites.net`)
-- `ingram_amazon_price_comp.user.js` requires Tampermonkey's `GM_xmlhttpRequest` permission to cross-origin fetch Amazon prices
+- `amazon_price_comp.user.js` requires Tampermonkey's `GM_xmlhttpRequest` permission to cross-origin fetch Amazon prices
