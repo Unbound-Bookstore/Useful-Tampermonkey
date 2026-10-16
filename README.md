@@ -53,70 +53,33 @@ Runs on Taobao, Tmall, and Douban book pages. Extracts the ISBN and displays it 
 
 ---
 
-### 3. `amazon_to_shopify.user.js` — Amazon Book → Shopify (Unbound)
+### 3. `to_shopify.user.js` — Product Page → Shopify (Unbound)
 
-Adds a sidebar panel to Amazon book product pages. Parses the page for book metadata and sends it to the Unbound backend to create or update a Shopify product.
+One script that adds a "Send to Shopify" panel to supplier and bookstore product pages, parses the page, and creates or updates the Shopify product via the Unbound backend. Replaces `amazon_to_shopify`, `bookstw_to_shopify`, `eslite_to_shopify` and `apriori_to_shopify`.
 
-**Matches:** `www.amazon.com/dp/*`, `www.amazon.com/gp/product/*`, `www.amazon.com/*/dp/*`
+**Matches:** `www.amazon.com/dp/*` (and `/gp/product/*`, `/*/dp/*`), `www.books.com.tw/products/*`, `www.eslite.com/product/*`, `aprioridistribution.com/product/*`
 
-**Features:**
-- Extracts: title, authors, publisher, publication date, pages, language, binding, weight, ISBN-13, cover image, description
-- Converts ISBN-10 → ISBN-13 automatically
-- Editable fields before submission: title, authors, publisher, language, binding, cost, price, quantity, active status
-- POSTs to `https://unbound-backend.azurewebsites.net/api/ShopifyCreateFromData`
-- Shows a success link to the created/updated Shopify product, or an error message
+**Books — Amazon, books.com.tw, eslite** → `POST /api/ShopifyCreateFromData`
+- Extracts ISBN-13, title, author(s), publisher, publication date, pages, binding, language, description, cover image, plus per-site extras: weight (Amazon, eslite), dimensions / translator / list price in NT$ (books.com.tw, eslite), category tags (books.com.tw, eslite), USD price (Amazon, prefilled)
+- Editable before sending: title, authors, publisher, language, binding, cost, price, quantity, active status
+- eslite covers are fetched in the browser and sent as data (its image CDN blocks server-side downloads)
+- Creates the product or updates the existing one with the same ISBN; shows a link to it in Shopify
 
-**Usage:**
-1. Open any Amazon book product page (e.g. `amazon.com/dp/ASIN`)
-2. A panel appears at the bottom-right
-3. Review/edit the pre-filled fields
-4. Optionally enter cost, price, quantity; check "Active" to publish immediately
-5. Click **"Send to Shopify"**
-
----
-
-### 4. `eslite_to_shopify.user.js` — Eslite Book → Shopify (Unbound)
-
-Adds a sidebar panel to eslite.com book product pages. Parses the page for book metadata and sends it to the Unbound backend to create or update a Shopify product. Mirrors `bookstw_to_shopify.user.js` for books.com.tw.
-
-**Matches:** `www.eslite.com/product/*`
-
-**Features:**
-- Extracts: title, author(s), translator(s), illustrator/painter(s), publisher, publication date, ISBN-13, pages, binding, language, dimensions, weight, list/discounted price, cover image, description, category tags (from breadcrumb)
-- Editable fields before submission: title, authors, publisher, language, binding, cost, price, quantity, active status
-- POSTs to `https://unbound-backend.azurewebsites.net/api/ShopifyCreateFromData`
-- Shows a success link to the created/updated Shopify product, or an error message
+**Chocolate — Apriori Distribution (WooCommerce)** → `POST /api/products/createNonBook`
+- Extracts title, barcode, wholesale price, suggested retail, unit/case size, description, all gallery images (full size)
+- Vendor defaults to the first word of the title; product type `Chocolate`; barcode is both SKU and barcode; wholesale is cost; price defaults to `floor(wholesale × 2) + 0.99` (recalculated when cost is edited, unless price was edited by hand)
+- Description skips the price/info rows and the distributor's "Check out our sampler" line, and is editable; a warning shows if none is found
+- Images are fetched in the browser (the site blocks server-side downloads) and uploaded to Shopify
+- Creates a single-variant product. If the barcode already exists, the button becomes **"Update existing product"**, which adds images the product doesn't have yet and sets cost/description only where missing — price, title, vendor and status are left alone
 
 **Usage:**
-1. Open any eslite.com book product page (e.g. `eslite.com/product/<id>`)
-2. A panel appears at the bottom-right
-3. Review/edit the pre-filled fields
-4. Optionally enter cost, price, quantity; check "Active" to publish immediately
-5. Click **"Send to Shopify"**
-
----
-
-### 4b. `apriori_to_shopify.user.js` — Apriori Distribution Chocolate → Shopify (Unbound)
-
-Adds a panel to aprioridistribution.com (WooCommerce) product pages and creates a non-book Shopify product from it.
-
-**Matches:** `aprioridistribution.com/product/*`
-
-**Features:**
-- Extracts: title, brand (used as vendor), barcode, wholesale price, suggested retail, unit/case size, description, all gallery images (full size)
-- Barcode is used as both SKU and barcode; wholesale price as cost; default price is `floor(wholesale × 2) + 0.99` (recalculated when cost is edited, unless price was edited by hand); product type defaults to `Chocolate`
-- Description drops empty lines, the price/info rows and the distributor's "Check out our sampler" cross-sell line; it's editable before sending
-- POSTs to `https://unbound-backend.azurewebsites.net/api/products/createNonBook` with a single plain variant
-- Won't create a duplicate: if a product with the same barcode exists, it links to that product instead
-
-**Usage:**
-1. Open a product page on aprioridistribution.com
-2. Review/edit the pre-filled fields; optionally enter quantity and check "Active"
+1. Open a product page on one of the sites above (eslite and Amazon content that renders late is picked up automatically)
+2. Review/edit the pre-filled fields; optionally enter cost, price, quantity; check "Active" to publish immediately
 3. Click **"Send to Shopify"**
 
 ---
 
-### 5. `amazon_price_comp.user.js` — Distributor vs Amazon Price Checker (Ingram, PubEasy)
+### 4. `amazon_price_comp.user.js` — Distributor vs Amazon Price Checker (Ingram, PubEasy)
 
 Adds an **"Amazon Compare"** column to Ingram and PubEasy title tables with the Amazon print price, your distributor cost and the margin, and flags titles that are cheaper on Amazon. Replaces the separate `ingram_amazon_price_comp.user.js`.
 
@@ -124,7 +87,7 @@ Adds an **"Amazon Compare"** column to Ingram and PubEasy title tables with the 
 
 **Cost per site:**
 - **Ingram:** columns are found by header (EAN, Disc %, SRP, Disc. Price), so both search results and the IPS cart work. Cost = the **Disc. Price** when the page shows one (cart), otherwise `SRP × (1 − discount)`, with named codes `REG`=40%, `SHORT`=20%, `NET`=0% (or an explicit `%`)
-- **PubEasy:** reads the ISBN and the "List Price / Personal Price" cell; cost = personal price when shown, otherwise `list price × (1 − discount)`. A floating **Publisher discount** box (bottom-right), default **50%** (Penguin), recalculates every row instantly and is remembered in this browser
+- **PubEasy:** reads the ISBN and the "List Price / Personal Price" cell; cost = personal price when shown, otherwise `list price × (1 − discount)`. A floating **Publisher discount** box (bottom-right), default **46%** (Penguin), recalculates every row instantly and is remembered in this browser
 
 **Amazon price:**
 - Print only — Kindle, Audible/audiobook and audio CD prices are ignored, as are sponsored results
@@ -137,7 +100,7 @@ Adds an **"Amazon Compare"** column to Ingram and PubEasy title tables with the 
 
 **Usage:**
 1. Open an Ingram order/catalog page with an EAN column, or a PubEasy cart
-2. On PubEasy, adjust the discount if this publisher's terms aren't 50%
+2. On PubEasy, adjust the discount if this publisher's terms aren't 46%
 3. Red-highlighted rows are cheaper on Amazon
 
 ---
@@ -151,5 +114,5 @@ Adds an **"Amazon Compare"** column to Ingram and PubEasy title tables with the 
 ## Notes
 
 - `dd-taobao-po-v2.user.js` and `Taobao-ISBN-Extractor.user.js` work together — install both for full semi-automatic ISBN extraction on Taobao orders
-- `amazon_to_shopify.user.js` requires access to the Unbound backend (`unbound-backend.azurewebsites.net`)
+- `to_shopify.user.js` requires access to the Unbound backend (`unbound-backend.azurewebsites.net`)
 - `amazon_price_comp.user.js` requires Tampermonkey's `GM_xmlhttpRequest` permission to cross-origin fetch Amazon prices

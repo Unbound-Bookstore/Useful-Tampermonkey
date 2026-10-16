@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distributor vs Amazon Price Checker (Ingram, PubEasy)
 // @namespace    https://unboundsf.co/
-// @version      1.1
+// @version      1.2
 // @description  Add an Amazon print price / margin column to Ingram and PubEasy tables and flag titles cheaper on Amazon
 // @match        https://*.ingramcontent.com/*
 // @match        https://*.ingramipage.com/*
@@ -183,7 +183,7 @@
     // "List Price / Personal Price" cell shows "$18.00 /" then the personal price,
     // or "-" when there isn't one. Columns are located by header text. Cost is the
     // personal price if shown, else list × (1 − discount from the floating box).
-    const PUBEASY_DEFAULT_DISCOUNT = 50; // Penguin's standard trade discount, in %
+    const PUBEASY_DEFAULT_DISCOUNT = 46; // Penguin's standard trade discount, in %
     const PUBEASY_DISCOUNT_KEY = 'ub-pubeasy-discount';
 
     function loadPubeasyDiscount() {
