@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dangdang & Taobao Order to PO Table
 // @namespace    http://tampermonkey.net/dd-taobao-po-v2
-// @version      2.3
+// @version      2.5
 // @description  Convert Dangdang and Taobao order pages to PO table format
 // @connect      *
 // @run-at       document-start
@@ -18,6 +18,9 @@
 // @grant        GM_setClipboard
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_addValueChangeListener
 // @connect      unbound-backend.azurewebsites.net
 // @run-at document-start
 // ==/UserScript==
@@ -36,6 +39,134 @@ let isbnExtractionQueue = [];
 let currentQueueIndex = 0;
 let extractedISBNs = {};
 let openedWindows = [];
+
+// ========== CROSS-WINDOW ISBN HANDOFF (GM storage) ==========
+// The order page used to rely on the product window's window.opener.postMessage,
+// but pages that redirect (e.g. Taobao → Tmall) or send COOP headers drop
+// window.opener, so their ISBN never came back even though the page had one.
+// Instead the order page writes the current job to GM storage, this same script
+// (which also runs on item pages) extracts the ISBN there and writes the result
+// back, and the order page hears it via GM_addValueChangeListener.
+const ISBN_JOB_KEY = 'isbnExtractJob';
+const ISBN_RESULT_KEY = 'isbnExtractResult';
+
+// Pacing — opening product pages back to back trips Taobao's bot check, so
+// wait a random while between items and take a longer break every so often.
+const PACE_BETWEEN_ITEMS_MS = [4000, 9000];
+const PACE_BREAK_EVERY = 15;
+const PACE_BREAK_MS = [45000, 90000];
+const randomBetween = ([min, max]) => min + Math.random() * (max - min);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Taobao's bot check: a "punish" page, a login redirect, or a baxia / nocaptcha
+// slider overlay on top of the product page.
+function isVerificationPage() {
+    if (/_____tmd_____|\/punish/.test(location.pathname) || location.hostname === 'login.taobao.com') return true;
+    return !!document.querySelector(
+        '#baxia-dialog-content, .baxia-dialog, #nc_1_n1z, #nc_1_wrapper, .nc-container, ' +
+        'iframe[src*="punish"], iframe[src*="_____tmd_____"], #J_MIDDLEWARE_FRAME_WIDGET');
+}
+
+function itemIdFromUrl(url) {
+    const m = String(url || '').match(/[?&]id=(\d+)/);
+    return m ? m[1] : null;
+}
+
+function extractISBNFromItemPage() {
+    const clean = s => (s || '').trim().replace(/[\s\-–—]/g, '');
+    const valid = s => /^\d{10}$|^\d{13}$/.test(s);
+
+    // emphasis params (新版 — label is subtitle, value is title)
+    for (const item of document.querySelectorAll('[class*="emphasisParamsInfoItem--"]')) {
+        const valueElem = item.querySelector('[class*="emphasisParamsInfoItemTitle--"]');
+        const labelElem = item.querySelector('[class*="emphasisParamsInfoItemSubTitle--"]');
+        if (valueElem && labelElem && /ISBN|书号/.test(labelElem.textContent)) {
+            const isbn = clean(valueElem.getAttribute('title') || valueElem.textContent);
+            if (valid(isbn)) return { isbn, source: 'emphasisParams' };
+        }
+    }
+    // general params (旧版 — label is title, value is subtitle)
+    for (const item of document.querySelectorAll('[class*="generalParamsInfoItem--"]')) {
+        const labelElem = item.querySelector('[class*="generalParamsInfoItemTitle--"]');
+        const valueElem = item.querySelector('[class*="generalParamsInfoItemSubTitle--"]');
+        if (labelElem && valueElem && /ISBN|书号/.test(labelElem.textContent)) {
+            const isbn = clean(valueElem.textContent);
+            if (valid(isbn)) return { isbn, source: 'generalParams' };
+        }
+    }
+    // Last resort: an "ISBN: …" anywhere in the page text (older layouts, detail images' captions)
+    const fromText = document.body ? extractISBNFromText(document.body.innerText || '') : null;
+    return fromText ? { isbn: fromText, source: 'pageText' } : null;
+}
+
+// Jobs stay valid long enough for someone to solve a verification in between
+const ISBN_JOB_MAX_AGE_MS = 10 * 60 * 1000;
+
+function reportVerification(job) {
+    console.log('⚠️ Taobao verification page — waiting for it to be solved');
+    GM_setValue(ISBN_RESULT_KEY, { jobId: job.jobId, verification: true, url: location.href, ts: Date.now() });
+}
+
+async function runItemPageExtraction() {
+    const pageId = itemIdFromUrl(location.href);
+    const job = GM_getValue(ISBN_JOB_KEY, null);
+    if (!pageId || !job || job.itemId !== pageId || Date.now() - job.ts > ISBN_JOB_MAX_AGE_MS) return;
+
+    console.log(`🤖 ISBN job ${job.jobId} for item ${pageId}: extracting…`);
+    // Params sections render client-side and some only load when scrolled into view.
+    // Read without scrolling for the first few seconds (most pages are done by then),
+    // then scroll down in uneven steps — up to ~15s of reading in total. Time spent
+    // on a verification overlay doesn't count, and is reported to the order page.
+    let found = null;
+    let elapsed = 0;
+    let verificationReported = false;
+    let scrollY = 0;
+    while (elapsed < 15000) {
+        if (document.body) {
+            if (isVerificationPage()) {
+                if (!verificationReported) { reportVerification(job); verificationReported = true; }
+                await sleep(1500);
+                continue;
+            }
+            found = extractISBNFromItemPage();
+            if (found) break;
+            if (elapsed > 3000) {
+                scrollY = Math.min(document.body.scrollHeight, scrollY + window.innerHeight * (0.4 + Math.random() * 0.6));
+                window.scrollTo(0, scrollY);
+            }
+        }
+        const pause = 600 + Math.random() * 700;
+        await sleep(pause);
+        elapsed += pause;
+    }
+
+    console.log(found ? `✓ ISBN ${found.isbn} (${found.source})` : '✗ No ISBN on this page');
+    GM_setValue(ISBN_RESULT_KEY, {
+        jobId: job.jobId,
+        itemId: pageId,
+        isbn: found ? found.isbn : '',
+        source: found ? found.source : '',
+        url: location.href,
+        ts: Date.now(),
+    });
+}
+
+function onPageReady(fn) {
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', fn);
+    else fn();
+}
+
+if (/\/item\.htm/.test(location.pathname)) {
+    onPageReady(runItemPageExtraction);
+} else if (/(^|\.)(taobao|tmall)\.com$/.test(location.hostname)) {
+    // A redirect to the punish / login page during an extraction run
+    onPageReady(() => {
+        const job = GM_getValue(ISBN_JOB_KEY, null);
+        if (job && Date.now() - job.ts < ISBN_JOB_MAX_AGE_MS && isVerificationPage()) {
+            reportVerification(job);
+        }
+    });
+}
 
     function getCurrentPlatform() {
         const hostname = window.location.hostname;
@@ -1062,6 +1193,7 @@ function startSemiAutomaticExtraction(orderData) {
         .filter(item => !item.hasISBN);
 
     currentQueueIndex = 0;
+    itemsOpenedSinceBreak = 0;
     extractedISBNs = {};
 
     const alreadyHasISBN = orderData.items.filter(item => item.isbn).length;
@@ -1093,10 +1225,32 @@ function openNextInSingleWindow() {
 
     const current = isbnExtractionQueue[currentQueueIndex];
 
+    // Another variant of the same product may already have filled this ISBN in
+    const currentItem = window.currentOrderData && window.currentOrderData.items[current.index];
+    if (currentItem && currentItem.isbn) {
+        currentQueueIndex++;
+        openNextInSingleWindow();
+        return;
+    }
+
     // Update progress
     updateExtractionProgress(currentQueueIndex + 1, isbnExtractionQueue.length, current.name);
 
-    const extractUrl = current.url + '&_isbn_extract=1';
+    // Publish the job before navigating so the item page can pick it up
+    window.currentJob = {
+        jobId: `${Date.now()}-${currentQueueIndex}`,
+        itemId: itemIdFromUrl(current.url),
+        url: current.url,
+    };
+    GM_setValue(ISBN_JOB_KEY, { ...window.currentJob, ts: Date.now() });
+    if (!window.currentJob.itemId) {
+        console.log('⚠️ Item URL has no id=, the product page cannot report back:', current.url);
+    }
+
+    // _isbn_extract keeps the standalone Taobao ISBN Extractor's auto mode working too
+    const extractUrlObj = new URL(current.url, location.href);
+    extractUrlObj.searchParams.set('_isbn_extract', '1');
+    const extractUrl = extractUrlObj.toString();
 
     // First time: open new window
     if (!singleExtractionWindow || singleExtractionWindow.closed) {
@@ -1117,34 +1271,108 @@ function openNextInSingleWindow() {
 
     // Set a flag to track if we received the ISBN
     window.waitingForISBN = true;
-    window.currentExtractionUrl = current.url;
 
-    // Safety timeout - move to next after 10 seconds even if no response
+    // Safety timeout - the item page polls for up to 15s after loading, so allow
+    // for page load on top of that before moving on without a response
     extractionTimeout = setTimeout(() => {
         if (window.waitingForISBN) {
             console.log('⚠️ Timeout waiting for ISBN from:', current.url);
             window.waitingForISBN = false;
-            currentQueueIndex++;
-            openNextInSingleWindow();
+            scheduleNextItem();
         }
-    }, 10000); // 10 second timeout
+    }, 25000);
+}
+
+// Record a result for the item currently being extracted. Results for any other
+// item (e.g. a late reply from a page we already moved past) are ignored, so an
+// ISBN can never be credited to the wrong item.
+function handleExtractionResult(itemId, isbn, sourceUrl, via) {
+    const job = window.currentJob;
+    if (!window.waitingForISBN || !job || !itemId || itemId !== job.itemId) {
+        console.log(`(ignored ${via} result for item ${itemId}; waiting for ${job && job.itemId})`);
+        return;
+    }
+    if (isbn) {
+        extractedISBNs[job.url] = isbn;
+        if (window.currentOrderData) {
+            window.currentOrderData.items.forEach(item => {
+                if (itemIdFromUrl(item.url) === itemId) item.isbn = isbn;
+            });
+        }
+        console.log(`✓ Received ISBN ${isbn} for item ${itemId} via ${via}`);
+    } else {
+        console.log(`✗ Item ${itemId} reported no ISBN (${sourceUrl})`);
+    }
+    onISBNReceived();
+}
+
+GM_addValueChangeListener(ISBN_RESULT_KEY, (name, oldValue, result) => {
+    if (!result || !window.currentJob || result.jobId !== window.currentJob.jobId) return;
+    if (result.verification) {
+        if (window.waitingForISBN) onVerificationRequired();
+        return;
+    }
+    setExtractionNotice('');
+    handleExtractionResult(result.itemId, result.isbn, result.url, `item page (${result.source || 'not found'})`);
+});
+
+let nextItemTimer = null;
+let itemsOpenedSinceBreak = 0;
+
+// Wait a random while before the next product, with a longer break every
+// PACE_BREAK_EVERY products, so the run doesn't look like a bot to Taobao.
+function scheduleNextItem() {
+    currentQueueIndex++;
+    itemsOpenedSinceBreak++;
+    let delay = randomBetween(PACE_BETWEEN_ITEMS_MS);
+    if (itemsOpenedSinceBreak >= PACE_BREAK_EVERY && currentQueueIndex < isbnExtractionQueue.length) {
+        itemsOpenedSinceBreak = 0;
+        delay = randomBetween(PACE_BREAK_MS);
+        setExtractionNotice(`☕ 休息 ${Math.round(delay / 1000)} 秒，避免触发淘宝验证…`);
+    }
+    nextItemTimer = setTimeout(() => {
+        nextItemTimer = null;
+        setExtractionNotice('');
+        openNextInSingleWindow();
+    }, delay);
 }
 
 function onISBNReceived() {
-    // Clear the timeout
     if (extractionTimeout) {
         clearTimeout(extractionTimeout);
         extractionTimeout = null;
     }
-
-    // Mark as received
     window.waitingForISBN = false;
+    scheduleNextItem();
+}
 
-    // Move to next item after a short delay
-    currentQueueIndex++;
-    setTimeout(() => {
-        openNextInSingleWindow();
-    }, 1000); // 1 second delay before moving to next
+// Taobao showed its bot check: stop the timeout and wait for a person to solve
+// it in the popup — the product page then loads and reports as usual.
+function onVerificationRequired() {
+    if (extractionTimeout) {
+        clearTimeout(extractionTimeout);
+        extractionTimeout = null;
+    }
+    setExtractionNotice(
+        '⚠️ 淘宝要求安全验证：请切换到弹出的商品窗口完成验证，完成后会自动继续。' +
+        '<br><button id="skip-verification-btn" style="margin-top:8px;padding:4px 12px;border:1px solid #ccc;border-radius:4px;background:#fff;cursor:pointer;">跳过此商品</button>',
+        true);
+    const skip = document.getElementById('skip-verification-btn');
+    if (skip) skip.addEventListener('click', () => {
+        if (!window.waitingForISBN) return;
+        window.waitingForISBN = false;
+        setExtractionNotice('');
+        scheduleNextItem();
+    });
+}
+
+function setExtractionNotice(html, isWarning = false) {
+    const el = document.getElementById('extraction-notice');
+    if (!el) return;
+    el.innerHTML = html;
+    el.style.display = html ? 'block' : 'none';
+    el.style.background = isWarning ? '#fff1f0' : '#f0f5ff';
+    el.style.borderColor = isWarning ? '#ffa39e' : '#adc6ff';
 }
 
     function showExtractionProgressModal(orderData, alreadyExtracted = 0) {
@@ -1193,6 +1421,7 @@ function onISBNReceived() {
                 当前: <span id="extraction-current">准备中...</span>
             </div>
         </div>
+        <div id="extraction-notice" style="display:none; border: 1px solid #adc6ff; border-radius: 6px; padding: 12px; margin-bottom: 15px; font-size: 13px; color: #333;"></div>
         <div style="background: #fff7e6; border: 1px solid #ffd591; border-radius: 6px; padding: 12px; margin-bottom: 15px;">
             <div style="font-size: 13px; color: #fa8c16;">
                 ⚠️ <strong>说明:</strong><br>
@@ -1211,7 +1440,12 @@ function onISBNReceived() {
     document.body.appendChild(modal);
 
     document.getElementById('cancel-extraction-btn').addEventListener('click', () => {
+        if (nextItemTimer) { clearTimeout(nextItemTimer); nextItemTimer = null; }
+        if (extractionTimeout) { clearTimeout(extractionTimeout); extractionTimeout = null; }
+        window.waitingForISBN = false;
         isbnExtractionQueue = [];
+        GM_setValue(ISBN_JOB_KEY, null);
+        window.currentJob = null;
         if (singleExtractionWindow && !singleExtractionWindow.closed) {
             singleExtractionWindow.close();
         }
@@ -1238,6 +1472,8 @@ function updateExtractionProgress(current, total, itemName) {
 }
 
 function completeExtraction() {
+    GM_setValue(ISBN_JOB_KEY, null);
+    window.currentJob = null;
     // Merge extracted ISBNs back into orderData
     const globalOrderData = window.currentOrderData;
     if (globalOrderData) {
@@ -1294,35 +1530,11 @@ function completeExtraction() {
     }
 }
 
-// Listen for ISBN data from product pages
+// Listen for ISBN data from the standalone Taobao ISBN Extractor (still works when
+// window.opener survives; the GM storage handoff above covers the cases where it doesn't)
 window.addEventListener('message', function(event) {
-    if (event.data.type === 'TAOBAO_ISBN_FOUND') {
-        const { isbn } = event.data;
-        // Store using the original URL we opened so completeExtraction() can match by id=
-        const key = window.currentExtractionUrl || event.data.url;
-        extractedISBNs[key] = isbn;
-        console.log('✓ Received ISBN:', isbn, 'for', key);
-
-        // Also write directly into the item now, before completeExtraction() runs,
-        // in case URL matching fails later (e.g. Taobao rewrites the URL)
-        if (window.currentOrderData && key) {
-            const idMatch = key.match(/[?&]id=(\d+)/);
-            if (idMatch) {
-                const targetId = idMatch[1];
-                window.currentOrderData.items.forEach(item => {
-                    const itemIdMatch = item.url.match(/[?&]id=(\d+)/);
-                    if (itemIdMatch && itemIdMatch[1] === targetId) {
-                        item.isbn = isbn;
-                        console.log('✓ Directly wrote ISBN', isbn, 'to item id=', targetId);
-                    }
-                });
-            }
-        }
-
-        // Trigger next extraction
-        if (window.waitingForISBN) {
-            onISBNReceived();
-        }
+    if (event.data && event.data.type === 'TAOBAO_ISBN_FOUND') {
+        handleExtractionResult(itemIdFromUrl(event.data.url), event.data.isbn, event.data.url, 'extractor postMessage');
     }
 });
 
