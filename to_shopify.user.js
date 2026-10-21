@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Product Page → Shopify (Unbound)
 // @namespace    https://unbound-backend.azurewebsites.net/
-// @version      1.0
+// @version      1.1
 // @description  Parse a book (Amazon, books.com.tw, eslite) or chocolate (Apriori Distribution) product page and create/update the Shopify product via Unbound backend
 // @author       Unbound
 // @match        https://www.amazon.com/dp/*
@@ -11,6 +11,8 @@
 // @match        https://www.eslite.com/product/*
 // @match        https://aprioridistribution.com/product/*
 // @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @grant        GM_addStyle
 // @connect      unbound-backend.azurewebsites.net
 // @connect      s2.eslite.com
@@ -23,6 +25,21 @@
 
     const API_BASE = 'https://unbound-backend.azurewebsites.net/api';
     const SHOPIFY_ADMIN = 'https://admin.shopify.com/store/ff058f-a3';
+
+    // The backend only accepts requests carrying a service key (one of its SERVICE_API_KEYS).
+    // Asked for once and kept in Tampermonkey storage; a rejected key is forgotten so it's asked again.
+    function serviceKey() {
+        let key = GM_getValue('unboundServiceKey', '');
+        if (!key) {
+            key = (prompt('Unbound backend service key (ask the admin):') || '').trim();
+            if (key) GM_setValue('unboundServiceKey', key);
+        }
+        return key;
+    }
+
+    function forgetServiceKeyIfRejected(status) {
+        if (status === 401) GM_setValue('unboundServiceKey', '');
+    }
 
     // ── Styles ──────────────────────────────────────────────────────────────
     GM_addStyle(`
@@ -181,9 +198,10 @@
         GM_xmlhttpRequest({
             method: 'POST',
             url: `${API_BASE}${path}`,
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'X-Service-Key': serviceKey() },
             data: JSON.stringify(body),
             onload(res) {
+                forgetServiceKeyIfRejected(res.status);
                 let data;
                 try { data = JSON.parse(res.responseText); } catch (e) { data = {}; }
                 onload(res, data);
