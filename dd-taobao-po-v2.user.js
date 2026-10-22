@@ -56,7 +56,7 @@ const PACE_BETWEEN_ITEMS_MS = [4000, 9000];
 const PACE_BREAK_EVERY = 15;
 const PACE_BREAK_MS = [45000, 90000];
 
-// The backend only accepts requests carrying a service key (one of its SERVICE_API_KEYS).
+// The backend only accepts requests carrying a service key (created by the owner in the admin's Service Keys page).
 // Asked for once and kept in Tampermonkey storage; a rejected key is forgotten so it's asked again.
 function serviceKey() {
     let key = GM_getValue('unboundServiceKey', '');
