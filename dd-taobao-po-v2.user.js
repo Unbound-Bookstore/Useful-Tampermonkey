@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dangdang & Taobao Order to PO Table
 // @namespace    http://tampermonkey.net/dd-taobao-po-v2
-// @version      2.5
+// @version      2.6
 // @description  Convert Dangdang and Taobao order pages to PO table format
 // @connect      *
 // @run-at       document-start
@@ -55,6 +55,21 @@ const ISBN_RESULT_KEY = 'isbnExtractResult';
 const PACE_BETWEEN_ITEMS_MS = [4000, 9000];
 const PACE_BREAK_EVERY = 15;
 const PACE_BREAK_MS = [45000, 90000];
+
+// The backend only accepts requests carrying a service key (created by the owner in the admin's Service Keys page).
+// Asked for once and kept in Tampermonkey storage; a rejected key is forgotten so it's asked again.
+function serviceKey() {
+    let key = GM_getValue('unboundServiceKey', '');
+    if (!key) {
+        key = (prompt('Unbound backend service key (ask the admin):') || '').trim();
+        if (key) GM_setValue('unboundServiceKey', key);
+    }
+    return key;
+}
+
+function forgetServiceKeyIfRejected(status) {
+    if (status === 401) GM_setValue('unboundServiceKey', '');
+}
 const randomBetween = ([min, max]) => min + Math.random() * (max - min);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -877,7 +892,9 @@ async function fetchISBNs(orderData, updateCallback) {
                     GM_xmlhttpRequest({
                         method: 'GET',
                         url: `${apiEndpoint}?url=${encodeURIComponent(item.url)}`,
+                        headers: { 'X-Service-Key': serviceKey() },
                         onload: function(response) {
+                            forgetServiceKeyIfRejected(response.status);
                             if (response.status === 200) {
                                 try {
                                     const jsonData = JSON.parse(response.responseText);
